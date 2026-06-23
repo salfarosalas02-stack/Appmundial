@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2020","lib":["esnext"],"strict": true,"noEmit": true,
+    "module":"esnext","moduleResolution":"bundler","esModuleInterop": true,
+    "skipLibCheck": true,"baseUrl":".","paths": { "@/*": ["./src/*"] }
+  },
+  "include": [
+    "src/types/index.ts","src/lib/probability/poisson.ts","src/lib/probability/predictMatch.ts",
+    "src/lib/standings/computeStandings.ts","src/data/mock/teams.ts","src/data/mock/buildFixtures.ts",
+    "src/lib/providers/DataProvider.ts","src/lib/providers/MockProvider.ts"
+  ]
+}
