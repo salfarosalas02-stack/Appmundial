@@ -5,12 +5,46 @@ import { computeStandings } from '@/lib/standings/computeStandings';
 
 // Adaptador para API-Football (api-sports.io). Solo corre en el SERVIDOR.
 // Mapea la respuesta externa al modelo interno y marca los datos como 'confirmado'.
-// NOTA: el mapeo de IDs externos a nuestros códigos de equipo se hace por nombre;
-// en producción conviene una tabla de equivalencias. Si algo falla, hace fallback a mock.
+// Si algo falla, /api/snapshot hace fallback a mock con aviso.
+
+// La API devuelve los nombres en inglés; nuestra UI los tiene en español.
+// Esta tabla traduce: id interno -> posibles nombres que puede usar la API (en minúsculas).
+const API_NAME_ALIASES: Record<string, string[]> = {
+  MEX: ['mexico'], RSA: ['south africa'], KOR: ['south korea', 'korea republic', 'korea'],
+  CZE: ['czechia', 'czech republic'], CAN: ['canada'], BIH: ['bosnia and herzegovina', 'bosnia'],
+  QAT: ['qatar'], SUI: ['switzerland'], BRA: ['brazil'], MAR: ['morocco'], HAI: ['haiti'],
+  SCO: ['scotland'], USA: ['usa', 'united states'], PAR: ['paraguay'], AUS: ['australia'],
+  TUR: ['turkey', 'turkiye', 'turkiye'], GER: ['germany'], CUW: ['curacao'],
+  CIV: ['ivory coast', 'cote divoire'], ECU: ['ecuador'],
+  NED: ['netherlands'], JPN: ['japan'], SWE: ['sweden'], TUN: ['tunisia'],
+  BEL: ['belgium'], EGY: ['egypt'], IRN: ['iran'], NZL: ['new zealand'],
+  ESP: ['spain'], CPV: ['cape verde', 'cape verde islands', 'cabo verde'], KSA: ['saudi arabia'],
+  URU: ['uruguay'], FRA: ['france'], SEN: ['senegal'], IRQ: ['iraq'], NOR: ['norway'],
+  ARG: ['argentina'], ALG: ['algeria'], AUT: ['austria'], JOR: ['jordan'],
+  POR: ['portugal'], COD: ['dr congo', 'congo dr', 'democratic republic of congo'],
+  UZB: ['uzbekistan'], COL: ['colombia'], ENG: ['england'], CRO: ['croatia'],
+  GHA: ['ghana'], PAN: ['panama'],
+};
+
+// Normaliza un nombre para comparar (minusculas, sin acentos ni signos).
+function norm(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z ]/g, '')
+    .trim();
+}
+
+// Indice: nombre-normalizado -> id interno.
+const NAME_TO_ID = new Map<string, string>();
+for (const [id, aliases] of Object.entries(API_NAME_ALIASES)) {
+  for (const a of aliases) NAME_TO_ID.set(norm(a), id);
+}
+
 export class ApiFootballProvider implements DataProvider {
   private base = process.env.FOOTBALL_API_BASE ?? 'https://v3.football.api-sports.io';
   private key = process.env.FOOTBALL_API_KEY ?? '';
-  private league = process.env.FOOTBALL_LEAGUE_ID ?? '1';
+  private league = process.env.FOOTBALL_LEAGUE_ID ?? '1'; // 1 = World Cup en API-Football
   private season = process.env.FOOTBALL_SEASON ?? '2026';
 
   private async call(path: string) {
@@ -22,8 +56,12 @@ export class ApiFootballProvider implements DataProvider {
     return res.json();
   }
 
+  private idFromName(name: string): string | undefined {
+    return NAME_TO_ID.get(norm(name));
+  }
+
   private mapStatus(short: string): MatchStatus {
-    if (['1H', '2H', 'HT', 'ET', 'LIVE', 'P'].includes(short)) return 'en-juego';
+    if (['1H', '2H', 'HT', 'ET', 'BT', 'LIVE', 'P'].includes(short)) return 'en-juego';
     if (['FT', 'AET', 'PEN'].includes(short)) return 'finalizado';
     return 'programado';
   }
@@ -31,15 +69,13 @@ export class ApiFootballProvider implements DataProvider {
   async getSnapshot(): Promise<Snapshot> {
     if (!this.key) throw new Error('FOOTBALL_API_KEY no configurada');
 
-    // Mantenemos nuestros equipos/grupos (composición conocida) y solo traemos
-    // resultados/fixtures reales para enriquecerlos.
     const teams: Team[] = MOCK_TEAMS;
-    const byName = new Map(teams.map(t => [t.name.toLowerCase(), t.id]));
-
     const data = await this.call(`/fixtures?league=${this.league}&season=${this.season}`);
-    const matches: Match[] = (data.response ?? []).map((fx: any, idx: number): Match | null => {
-      const homeId = byName.get(String(fx.teams?.home?.name).toLowerCase());
-      const awayId = byName.get(String(fx.teams?.away?.name).toLowerCase());
+    const response: any[] = data.response ?? [];
+
+    const matches: Match[] = response.map((fx: any, idx: number): Match | null => {
+      const homeId = this.idFromName(fx.teams?.home?.name);
+      const awayId = this.idFromName(fx.teams?.away?.name);
       if (!homeId || !awayId) return null;
       const status = this.mapStatus(fx.fixture?.status?.short);
       return {
@@ -54,6 +90,11 @@ export class ApiFootballProvider implements DataProvider {
         provenance: 'confirmado',
       };
     }).filter(Boolean) as Match[];
+
+    // Si la API no devolvio partidos reconocibles, avisamos en vez de mostrar vacio.
+    if (matches.length === 0) {
+      throw new Error('La API respondio pero no se reconocieron partidos (revisa league/season o el plan).');
+    }
 
     const groups: Group[] = Object.entries(TEAMS_BY_GROUP).map(([id, teamIds]) => ({
       id, teamIds,
